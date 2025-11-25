@@ -80,7 +80,8 @@ xpn:///xpn/quixote xpn:///xpn/res/quixote-wc
 
 To read and write Dataframes, it is also necessary to specify the data source to be used. In this version of the connector, packages for reading and writing plain-text files and images have been implemented.
 
-Text files Dataframes:
+### Text files Dataframes:
+
 ```
 df = spark_session.read.format("org.expand.datasource.text").load("xpn://<XPN_DIR>")
 df.write.mode("Append").format("org.expand.datasource.text").option("path", "xpn://<XPN_OUT_DIR>").save()
@@ -88,7 +89,8 @@ df.write.mode("Append").format("org.expand.datasource.text").option("path", "xpn
 
 Text Dataframes are single-column Dataframes, in which each row corresponds to a line from the requested input files.
 
-Image files Dataframes:
+### Image files Dataframes:
+
 ```
 df = spark_session.read.format("org.expand.datasource.image").load("xpn://<XPN_DIR>")
 df.write.mode("Append").format("org.expand.datasource.image").save()
