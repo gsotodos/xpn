@@ -75,3 +75,34 @@ $SPARK_HOME/bin/spark-submit --master spark://$MASTER_NODE:7077 \
 $CONNECTOR_HOME/target/test-xpn-1.0.jar \
 xpn:///xpn/quixote xpn:///xpn/res/quixote-wc
 ```
+
+## Dataframes usage
+
+To read and write Dataframes, it is also necessary to specify the data source to be used. In this version of the connector, packages for reading and writing plain-text files and images have been implemented.
+
+Text files Dataframes:
+```
+df = spark_session.read.format("org.expand.datasource.text").load("xpn://<XPN_DIR>")
+df.write.mode("Append").format("org.expand.datasource.text").option("path", "xpn://<XPN_OUT_DIR>").save()
+```
+
+Text Dataframes are single-column Dataframes, in which each row corresponds to a line from the requested input files.
+
+Image files Dataframes:
+```
+df = spark_session.read.format("org.expand.datasource.image").load("xpn://<XPN_DIR>")
+df.write.mode("Append").format("org.expand.datasource.image").save()
+```
+
+Image Dataframes are six-column Dataframes where each row represents one of the requested images. Each image is represented by the following fields:
+
+```
+origin
+height
+width
+nChannels
+mode
+data
+```
+
+To write image-based Dataframes, it is necessary to specify a Dataframe with all these columns.
