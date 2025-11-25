@@ -55,7 +55,7 @@
 
      typedef struct cp_args {
        char *entry, *dir_name, *dest_prefix;
-       int first_block, replica, num_blocks;
+       int master_node, num_blocks;
      } Copy_args;
 
      char command[4*1024];
@@ -106,10 +106,6 @@
     sprintf( dest_path, "%s/%s", cp_args->dest_prefix, aux_entry );
 
     if (rank == 0){
-      printf("%s -> %s\n", src_path, dest_path);
-    }
-
-    if (rank == 0){
       debug_info("%s -> %s\n", src_path, dest_path);
     }
 
@@ -149,38 +145,46 @@
       pthread_exit(NULL);
     }
 
-    offset_src = cp_args->first_block * blocksize ;
     // do
-    for (int b = cp_args->first_block; b < (cp_args->num_blocks); b+=size)
+    int r;
+    for (r = 0; r <= replication_level; r++)
     {
-      // XpnCalculateBlockMdata(&mdata, offset_src, cp_args->replica, &local_offset, &local_server);
+      int first_block = (rank + r + size - cp_args->master_node) % size;
+      if (first_block >= cp_args->num_blocks) {
+        continue;
+      }
+      offset_src = first_block * blocksize ;
+      for (int b = first_block; b < (cp_args->num_blocks); b+=size)
+      {
+        XpnCalculateBlockMdata(&mdata, offset_src, r, &local_offset, &local_server);
       // if (rank == 0) printf("offset_src %d replica %d local offset %ld local server %d rank %d\n", offset_src, cp_args->replica, (off64_t)local_offset, local_server, rank);
 
       // if (local_server == rank)
       // {
-      ret_2 = lseek64(fd_src, offset_src, SEEK_SET) ;
-      if (ret_2 < 0) {
-        perror("lseek: ");
-        goto finish_copy;
-      }
-      ret_2 = lseek64(fd_dest, local_offset+HEADER_SIZE, SEEK_SET) ;
-      if (ret_2 < 0) {
-        perror("lseek: ");
-        goto finish_copy;
-      }
+        ret_2 = lseek64(fd_src, offset_src, SEEK_SET) ;
+        if (ret_2 < 0) {
+          perror("lseek: ");
+          goto finish_copy;
+        }
+        ret_2 = lseek64(fd_dest, local_offset+HEADER_SIZE, SEEK_SET) ;
+        if (ret_2 < 0) {
+          perror("lseek: ");
+          goto finish_copy;
+        }
 
-      read_size = filesystem_read(fd_src, buf, buf_len);
-      if (read_size <= 0){
-        goto finish_copy;
+        read_size = filesystem_read(fd_src, buf, buf_len);
+        if (read_size <= 0){
+          goto finish_copy;
+        }
+        write_size = filesystem_write(fd_dest, buf, read_size);
+        if (write_size != read_size){
+          perror("write: ");
+          goto finish_copy;
+        }
+        local_size += write_size;
+        // }
+        offset_src+=( size * blocksize );
       }
-      write_size = filesystem_write(fd_dest, buf, read_size);
-      if (write_size != read_size){
-        perror("write: ");
-        goto finish_copy;
-      }
-      local_size += write_size;
-      // }
-      offset_src+=( size * blocksize );
     }
     // while(write_size > 0);
 
@@ -299,12 +303,6 @@ finish_copy:
           }
         }
 
-        for (int r = 0; r <= replication_level; r++)
-        {
-          int first_block = (rank + r + size - master_node) % size;
-          if (first_block >= num_blocks) {
-            continue;
-          }
           if (i >= num_threads)
           {
             pthread_join(threads[i % num_threads], NULL);
@@ -318,8 +316,9 @@ finish_copy:
           cp[i % num_threads]->entry = strdup(path);
           cp[i % num_threads]->dir_name = strdup(dir_name);
           cp[i % num_threads]->dest_prefix = strdup(dest_prefix);
-          cp[i % num_threads]->first_block = first_block;
-          cp[i % num_threads]->replica = r;
+          cp[i % num_threads]->master_node = master_node;
+          // cp[i % num_threads]->first_block = first_block;
+          // cp[i % num_threads]->replica = r;
           cp[i % num_threads]->num_blocks = num_blocks;
 
           if (pthread_create(
@@ -332,7 +331,7 @@ finish_copy:
               return -1;
           }
           i++;
-        }
+        // }
       }
       entry = readdir(dir);
     }

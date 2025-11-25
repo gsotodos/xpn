@@ -149,7 +149,6 @@
         for (i = 0; i <= replication_level; i++)
         {
           XpnCalculateBlockMdata(&mdata, offset_src, i, &local_offset, &local_server);
-          if (rank == 0) printf("offset_src %d replica %d local offset %ld local server %d rank %d\n", offset_src, i, (off64_t)local_offset, local_server, rank);
 
           if (local_server == rank)
           {
