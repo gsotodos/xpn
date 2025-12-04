@@ -547,6 +547,7 @@
               tier[count].max_size = parse_value(value_str);
               tier[count].current_size = 0;
               tier[count].is_xpn = is_xpn_partition(path);
+              tier[count].tier_lru_queue = hsm_migration_policy_init();
               count++;
             }
             line_pos = 0;
@@ -2315,7 +2316,7 @@
 
       return ret;
     }
-    // TODO HSM
+
     FILE * fdopen (int fd, const char *mode )
     {
       debug_info("[BYPASS] >> Begin fdopen....\n");
@@ -2688,23 +2689,22 @@
 
           if (tier[i].is_xpn) {
             int ret1, ret2;
-            ret1 = xpn_lseek(virtual_fd.real_fd, 0, SEEK_CUR);
-            if (ret != -1) {
-              debug_info("[BYPASS] << After feof....\n");
 
+            ret1 = xpn_lseek(virtual_fd.real_fd, 0, SEEK_CUR);
+            if (ret1 != -1) {
+              debug_info("[BYPASS] << After feof....\n");
               return ret;
             }
-            ret2 = xpn_lseek(virtual_fd.real_fd, 0, SEEK_END);
-            if (ret != -1) {
-              debug_info("[BYPASS] << After feof....\n");
 
+            ret2 = xpn_lseek(virtual_fd.real_fd, 0, SEEK_END);
+            if (ret2 != -1) {
+              debug_info("[BYPASS] << After feof....\n");
               return ret;
             }
 
             if (ret1 != ret2) {
               ret = 0;
-            }
-            else {
+            } else {
               ret = 1;
             }
           } else {
@@ -3163,7 +3163,7 @@
       if (xpn_adaptor_initCalled == 1)
       {
         debug_info("[BYPASS] xpn_destroy\n");
-
+        hsm_migration_policy_destroy();
         xpn_destroy();
       }
 
@@ -3578,6 +3578,59 @@
       return ret;
     }
 
+    // HSM Migration Policy API
+
+    LRU_QUEUE * hsm_migration_policy_init ( void ){
+      LRU_QUEUE * queue = (LRU_QUEUE *)malloc(sizeof(LRU_QUEUE));
+      queue->path = NULL;
+      queue->next = NULL;
+      return queue;
+    }
+
+    void hsm_migration_policy_destroy ( void ){
+      for (int tier_id = 0; tier_id < num_tiers; tier_id++) {
+        LRU_QUEUE * current = tier[tier_id].tier_lru_queue;
+        LRU_QUEUE * next;
+
+        while (current != NULL) {
+          next = current->next;
+          if (current->path != NULL) {
+            free(current->path);
+          }
+          free(current);
+          current = next;
+        }
+        tier[tier_id].tier_lru_queue = NULL;
+      }
+    }
+
+    void hsm_tier_append_file ( const char * path, int tier_id ){
+      LRU_QUEUE * queue = (LRU_QUEUE *)malloc(sizeof(LRU_QUEUE));
+      queue->path = strdup(path);
+      queue->next = tier[tier_id].tier_lru_queue;
+      tier[tier_id].tier_lru_queue = queue;
+    }
+
+    void hsm_tier_delete_file ( char * path, int tier_id ){
+      LRU_QUEUE * current = tier[tier_id].tier_lru_queue;
+      LRU_QUEUE * previous = NULL;
+
+      while (current != NULL) {
+        if (strcmp(current->path, path) == 0) {
+          if (previous == NULL) {
+            tier[tier_id].tier_lru_queue = current->next;
+          } else {
+            previous->next = current->next;
+          }
+          free(current->path);
+          free(current);
+          return;
+        }
+        previous = current;
+        current = current->next;
+      }
+    }
+
     // MPI API
 
     #if defined(HAVE_MPI_H)
@@ -3635,6 +3688,7 @@
       if (NULL != value && xpn_adaptor_initCalled == 1)
       {
         debug_info("[BYPASS] xpn_destroy\n");
+        hsm_migration_policy_destroy();
         xpn_destroy();
       }
 

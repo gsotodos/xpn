@@ -77,6 +77,12 @@
          // int is_file;
      };
 
+    typedef struct lru_queue
+    {
+        char                 *path;
+        struct lru_queue     *next;
+    } LRU_QUEUE;
+
      typedef struct hsm_architecture
      {
         char    *mount_path;
@@ -84,6 +90,7 @@
         int     max_size;
         int     current_size;
         int     is_xpn;
+        LRU_QUEUE * tier_lru_queue;
      } HSM_TIER;
 
 
@@ -166,6 +173,15 @@
      char * __realpath_chk ( const char * path, char * resolved_path, size_t resolved_len );
      int    fsync ( int fd );
      int    flock ( int fd, int operation );
+
+     // HSM Migration Policy API
+
+     LRU_QUEUE * hsm_migration_policy_init ( void );
+     void        hsm_migration_policy_destroy ( void );
+     void        hsm_tier_append_file ( const char * path, int tier_id );
+     void        hsm_tier_delete_file ( char * path, int tier_id );
+     // int     hsm_upgradre_tier( char ** path );
+     // int     hsm_degrade_tier( char ** path, int origin_tier );
 
 
      // MPI API
