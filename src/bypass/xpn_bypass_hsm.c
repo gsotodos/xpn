@@ -496,9 +496,9 @@
 #endif
 
     /* Parse k/m/g to int */
-    int parse_value(const char *str) {
+    size_t parse_value(const char *str) {
         int len = strlen(str);
-        int num = atoi(str);
+        size_t num = atoi(str);
         char suffix = tolower(str[len - 1]);
 
         switch (suffix) {
@@ -551,7 +551,7 @@
               count++;
             }
             line_pos = 0;
-            printf("[BYPASS_HSM] >>     Tier %d - mounted on %s - size %d is xpn - %d \n", tier[count-1].tier, tier[count-1].mount_path, tier[count-1].max_size, tier[count-1].is_xpn);
+            printf("[BYPASS_HSM] >>     Tier %d - mounted on %s - size %ld is xpn - %d \n", tier[count-1].tier, tier[count-1].mount_path, tier[count-1].max_size, tier[count-1].is_xpn);
           } else {
               if (line_pos < (int)sizeof(line) - 1) line[line_pos++] = buf[i];
           }
@@ -563,6 +563,21 @@
       printf("[BYPASS_HSM] >> After xpn_hsm_initialize, num tiers: %d\n", num_tiers);
 
       return 0;
+    }
+
+    void xpn_hsm_destroy ( void )
+    {
+      printf("[BYPASS_HSM] >> Begin xpn_hsm_destroy....\n");
+
+      hsm_migration_policy_destroy();
+      for (int i = 0; i < num_tiers; i++) {
+          free(tier[i].mount_path);
+      }
+      free(tier);
+      tier = NULL;
+      num_tiers = 0;
+
+      printf("[BYPASS_HSM] << After xpn_hsm_destroy....\n");
     }
 
 
@@ -665,6 +680,14 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if ((flags & O_CREAT) == O_CREAT) {
+            if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
+                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) {
+              printf("[BYPASS_HSM] >>     Tier %d is full, cannot creat file %s in this tier\n", tier[i].tier, path);
+              continue;
+            }
+          }
+
           char updated_path[512];
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
 
@@ -681,15 +704,16 @@
 
           if (fd >= 0) {
             printf("[BYPASS_HSM] >>     File %s opened in tier %d\n", path, tier[i].tier);
+            hsm_tier_append_file(updated_path, tier[i].tier);
             break;
           } else {
             printf("[BYPASS_HSM] >>     File %s could not be opened in tier %d\n", path, tier[i].tier);
           }
         }
 
-        debug_info("[BYPASS]\t xpn_open (%s,%o) -> %d\n", skip_xpn_prefix(path), flags, fd);
-
         ret = add_xpn_file_to_fdstable(fd);
+
+        debug_info("[BYPASS]\t xpn_open (%s,%o) -> %d\n", skip_xpn_prefix(path), flags, fd);
       }
       // Not an XPN partition. We must link with the standard library.
       else
@@ -737,6 +761,14 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if ((flags & O_CREAT) == O_CREAT) {
+            if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
+                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) {
+              printf("[BYPASS_HSM] >>     Tier %d is full, cannot creat file %s in this tier\n", tier[i].tier, path);
+              continue;
+            }
+          }
+
           char updated_path[512];
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
 
@@ -753,6 +785,7 @@
 
           if (fd >= 0) {
             printf("[BYPASS_HSM] >>     File %s opened in tier %d\n", path, tier[i].tier);
+            hsm_tier_append_file(updated_path, tier[i].tier);
             break;
           } else {
             printf("[BYPASS_HSM] >>     File %s could not be opened in tier %d\n", path, tier[i].tier);
@@ -809,6 +842,14 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if ((flags & O_CREAT) == O_CREAT) {
+            if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
+                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) {
+              printf("[BYPASS_HSM] >>     Tier %d is full, cannot creat file %s in this tier\n", tier[i].tier, path);
+              continue;
+            }
+          }
+
           char updated_path[512];
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
 
@@ -825,6 +866,7 @@
 
           if (fd >= 0) {
             printf("[BYPASS_HSM] >>     File %s opened in tier %d\n", path, tier[i].tier);
+            hsm_tier_append_file(updated_path, tier[i].tier);
             break;
           } else {
             printf("[BYPASS_HSM] >>     File %s could not be opened in tier %d\n", path, tier[i].tier);
@@ -871,17 +913,23 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
+              ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) continue;
+
           char updated_path[512];
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
 
           if (tier[i].is_xpn) {
             fd  = xpn_creat((const char *)updated_path,mode);
+            tier[i].current_size += 8192;
           } else {
             fd = dlsym_creat((char *)updated_path, mode);
           }
 
           if (fd >= 0) {
             printf("[BYPASS_HSM] >>     File %s created in tier %d\n", path, tier[i].tier);
+            if (tier[i].is_xpn == 1) tier[i].current_size += 8192;
+            hsm_tier_append_file(updated_path, tier[i].tier);
             break;
           } else {
             printf("[BYPASS_HSM] >>     File %s could not be created in tier %d\n", path, tier[i].tier);
@@ -1027,7 +1075,7 @@
             ret = dlsym_read(virtual_fd.real_fd, buf, nbyte);
           }
 
-          if (ret >= 0) break;
+          if (ret > 0) break;
         }
 
         debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, nbyte, ret);
@@ -1078,13 +1126,22 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if (tier[i].current_size + nbyte > tier[i].max_size) {
+              printf("[BYPASS_HSM] >>     Tier %d is full, cannot write %ld bytes in this tier\n", tier[i].tier, nbyte);
+              continue;
+          }
+
           if (tier[i].is_xpn) {
             ret = xpn_write(virtual_fd.real_fd, (void *)buf, nbyte);
           } else {
             ret = dlsym_write(virtual_fd.real_fd, (void *)buf, nbyte);
           }
 
-          if (ret >= 0) break;
+          if (ret > 0) {
+            tier[i].current_size += ret;
+            printf("[BYPASS_HSM] >>     Wrote %ld bytes in tier %d, current size %ld\n", ret, tier[i].tier, tier[i].current_size);
+            break;
+          }
         }
 
         debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, nbyte, ret);
@@ -1148,7 +1205,7 @@
             ret = dlsym_pread(virtual_fd.real_fd, buf, count, offset);
           }
 
-          if (ret >= 0) break;
+          if (ret > 0) break;
         }
 
         debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
@@ -1200,6 +1257,8 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if (tier[i].current_size + count > tier[i].max_size) continue;
+
           if (tier[i].is_xpn) {
             ret = xpn_lseek(virtual_fd.real_fd, offset, SEEK_SET);
             if (ret != -1) {
@@ -1212,7 +1271,10 @@
             ret = dlsym_pwrite(virtual_fd.real_fd, buf, count, offset);
           }
 
-          if (ret >= 0) break;
+          if (ret > 0) {
+            tier[i].current_size += ret;
+            break;
+          }
         }
 
         debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
@@ -1279,7 +1341,7 @@
             ret = dlsym_pread64(virtual_fd.real_fd, buf, count, offset);
           }
 
-          if (ret >= 0) break;
+          if (ret > 0) break;
         }
 
         debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
@@ -1331,6 +1393,8 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if (tier[i].current_size + count > tier[i].max_size) continue;
+
           if (tier[i].is_xpn) {
             ret = xpn_lseek(virtual_fd.real_fd, offset, SEEK_SET);
             if (ret != -1) {
@@ -1343,7 +1407,10 @@
             ret = dlsym_pwrite64(virtual_fd.real_fd, buf, count, offset);
           }
 
-          if (ret >= 0) break;
+          if (ret > 0) {
+            tier[i].current_size += ret;
+            break;
+          }
         }
 
         debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
@@ -1486,7 +1553,10 @@
             ret = dlsym_stat(_STAT_VER,(const char *)updated_path, buf);
           }
 
-          if (ret >= 0) break;
+          if (ret >= 0) {
+            printf("[BYPASS_HSM] >>     stat %s found in tier %d\n", path, tier[i].tier);
+            break;
+          }
         }
 
         debug_info("[BYPASS]\t xpn_stat %s -> %d\n", skip_xpn_prefix(path), ret);
@@ -2158,13 +2228,26 @@
           char updated_path[512];
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
 
+          struct stat buf;
           if (tier[i].is_xpn) {
-            ret = xpn_unlink(updated_path);
+            ret = xpn_stat(updated_path, &buf);
+            if (ret >= 0){
+              xpn_unlink(updated_path);
+              tier[i].current_size -= 8192;
+              tier[i].current_size -= buf.st_size;
+            }
           } else {
-            ret = dlsym_unlink((char *)updated_path);
+            ret = dlsym_stat(_STAT_VER,(const char *)updated_path, &buf);
+            if (ret >= 0){
+              dlsym_unlink((char *)updated_path);
+              tier[i].current_size -= buf.st_size;
+            }
           }
 
-          if (ret >= 0) break;
+          if (ret >= 0) {
+            hsm_tier_delete_file(updated_path, i);
+            break;
+          }
         }
 
         debug_info("[BYPASS]\t xpn_unlink -> %d\n", ret);
@@ -2227,7 +2310,10 @@
             ret = dlsym_remove((char *)updated_path);
           }
 
-          if (ret >= 0) break;
+          if (ret >= 0) {
+            hsm_tier_delete_file(updated_path, i);
+            break;
+          }
         }
 
       }
@@ -2497,6 +2583,8 @@
 
         for (int i = 0; i < num_tiers; i++) {
 
+          if (tier[i].current_size + size > tier[i].max_size) continue;
+
           if (tier[i].is_xpn) {
             ret = xpn_write(virtual_fd.real_fd, ptr, buf_size);
             ret = ret / size; // Number of items Written
@@ -2504,7 +2592,10 @@
             ret = dlsym_fwrite(ptr, size, nmemb, stream);
           }
 
-          if (ret > 0) break;
+          if (ret > 0) {
+            tier[i].current_size += (ret * size);
+            break;
+          }
         }
 
 
@@ -2750,6 +2841,8 @@
         debug_info("[BYPASS]\t xpn_mkdir %s\n",       (skip_xpn_prefix(path)));
 
         for (int i = 0; i < num_tiers; i++) {
+
+          if (tier[i].current_size > tier[i].max_size) continue;
 
           char updated_path[512];
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
@@ -3060,7 +3153,7 @@
 
       return ret;
     }
-    // ME QUEDO AQUI
+
     int dup ( int fd )
     {
       debug_info("[BYPASS] >> Begin dup...\n");
@@ -3163,7 +3256,7 @@
       if (xpn_adaptor_initCalled == 1)
       {
         debug_info("[BYPASS] xpn_destroy\n");
-        hsm_migration_policy_destroy();
+        xpn_hsm_destroy();
         xpn_destroy();
       }
 
@@ -3615,13 +3708,17 @@
       LRU_QUEUE * current = tier[tier_id].tier_lru_queue;
       LRU_QUEUE * previous = NULL;
 
-      while (current != NULL) {
+      while (current->next != NULL) {
         if (strcmp(current->path, path) == 0) {
+
           if (previous == NULL) {
             tier[tier_id].tier_lru_queue = current->next;
           } else {
             previous->next = current->next;
           }
+
+          printf("[BYPASS_HSM] HSM Migration Policy: Deleting file %s from tier %d, current size %ld\n", path, tier_id, tier[tier_id].current_size);
+
           free(current->path);
           free(current);
           return;
@@ -3688,7 +3785,7 @@
       if (NULL != value && xpn_adaptor_initCalled == 1)
       {
         debug_info("[BYPASS] xpn_destroy\n");
-        hsm_migration_policy_destroy();
+        xpn_hsm_destroy();
         xpn_destroy();
       }
 

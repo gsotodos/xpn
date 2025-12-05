@@ -79,16 +79,16 @@
 
     typedef struct lru_queue
     {
-        char                 *path;
-        struct lru_queue     *next;
+        char             *path;
+        struct lru_queue *next;
     } LRU_QUEUE;
 
      typedef struct hsm_architecture
      {
         char    *mount_path;
         int     tier;
-        int     max_size;
-        int     current_size;
+        size_t  max_size;
+        size_t  current_size;
         int     is_xpn;
         LRU_QUEUE * tier_lru_queue;
      } HSM_TIER;
@@ -180,8 +180,8 @@
      void        hsm_migration_policy_destroy ( void );
      void        hsm_tier_append_file ( const char * path, int tier_id );
      void        hsm_tier_delete_file ( char * path, int tier_id );
-     // int     hsm_upgradre_tier( char ** path );
-     // int     hsm_degrade_tier( char ** path, int origin_tier );
+     // int         hsm_upgradre_tier( char ** path );
+     // int         hsm_degrade_tier( char ** path, int origin_tier );
 
 
      // MPI API
