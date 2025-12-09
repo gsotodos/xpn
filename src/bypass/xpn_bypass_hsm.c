@@ -953,7 +953,7 @@
       debug_info("[BYPASS] << After creat....\n");
       return ret;
     }
-    // TODO HSM
+
     int mkstemp (char *template)
     {
       int ret = -1;
@@ -3726,6 +3726,60 @@
         previous = current;
         current = current->next;
       }
+    }
+
+    void hsm_migrate_file ( char * path, int source_tier, int dest_tier ) {
+      int fd_source, fd_dest;
+      ssize_t bytes_read, bytes_written;
+      char buffer[8192];
+      debug_info("[BYPASS_HSM] HSM Migration Policy: Migrating file %s from tier %d to tier %d\n", path, source_tier, dest_tier);
+
+      char old_path[512], new_path[512];
+      snprintf(old_path, sizeof(old_path), "%s/%s", tier[source_tier].mount_path, skip_xpn_prefix(path));
+      snprintf(new_path, sizeof(new_path), "%s/%s", tier[dest_tier].mount_path, skip_xpn_prefix(path));
+
+      if (tier[source_tier].is_xpn) {
+        fd_source = xpn_open(old_path, O_RDONLY);
+      } else {
+        fd_source = dlsym_open(old_path, O_RDONLY);
+      }
+
+      if (tier[dest_tier].is_xpn) {
+        fd_dest = xpn_open(new_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      } else {
+        fd_dest = dlsym_open2(new_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      }
+
+      do {
+        if (tier[source_tier].is_xpn) {
+          bytes_read = xpn_read(fd_source, buffer, sizeof(buffer));
+        } else {
+          bytes_read = dlsym_read(fd_source, buffer, sizeof(buffer));
+        }
+
+        if (tier[dest_tier].is_xpn) {
+          bytes_written = xpn_write(fd_dest, buffer, bytes_read);
+        } else {
+          bytes_written = dlsym_write(fd_dest, buffer, bytes_read);
+        }
+      } while (bytes_read > 0 && bytes_written == bytes_read);
+
+      if (tier[source_tier].is_xpn) {
+        xpn_close(fd_source);
+        xpn_unlink(old_path);
+      } else {
+        dlsym_close(fd_source);
+        dlsym_unlink(old_path);
+      }
+
+      if (tier[dest_tier].is_xpn) {
+        xpn_close(fd_dest);
+      } else {
+        dlsym_close(fd_dest);
+      }
+
+      hsm_tier_append_file (new_path, dest_tier);
+      hsm_tier_delete_file (old_path, source_tier);
     }
 
     // MPI API

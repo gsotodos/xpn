@@ -174,14 +174,14 @@
      int    fsync ( int fd );
      int    flock ( int fd, int operation );
 
+
      // HSM Migration Policy API
 
      LRU_QUEUE * hsm_migration_policy_init ( void );
      void        hsm_migration_policy_destroy ( void );
      void        hsm_tier_append_file ( const char * path, int tier_id );
      void        hsm_tier_delete_file ( char * path, int tier_id );
-     // int         hsm_upgradre_tier( char ** path );
-     // int         hsm_degrade_tier( char ** path, int origin_tier );
+     void        hsm_migrate_file( char * path, int source_tier, int dest_tier );
 
 
      // MPI API
