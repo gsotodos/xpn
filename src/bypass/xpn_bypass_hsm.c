@@ -123,7 +123,7 @@
       for (int i = old_size; i < fdstable_size; ++i)
       {
         fdstable[i].type = FD_FREE;
-        fdstable[i].real_fd = -1;
+        free(fdstable[i].real_fd);
         // fdstable[i].is_file = -1;
       }
 
@@ -154,7 +154,7 @@
       else
       {
         ret.type = FD_SYS;
-        ret.real_fd = fd;
+        *ret.real_fd = fd;
       }
 
       debug_info("[BYPASS]\t fdstable_get -> type: %d ; real_fd: %d\n", ret.type, ret.real_fd);
@@ -178,7 +178,7 @@
           debug_info("[BYPASS] << After fdstable_put....\n");
 
           // trick for python3...
-          dup2(fd.real_fd, i+PLUSXPN);
+          dup2(*fd.real_fd, i+PLUSXPN);
 
           return i + PLUSXPN;
         }
@@ -196,7 +196,7 @@
         debug_info("[BYPASS] << After fdstable_put....\n");
 
           // trick for python3...
-          dup2(fd.real_fd, old_size+PLUSXPN);
+          dup2(*fd.real_fd, old_size+PLUSXPN);
 
         return old_size + PLUSXPN;
       }
@@ -220,7 +220,9 @@
 
       fd = fd - PLUSXPN;
       fdstable[fd].type    = FD_FREE;
-      fdstable[fd].real_fd = -1;
+      free(fdstable[fd].real_fd);
+      free(fdstable[fd].tier);
+      free(fdstable[fd].path);
       // fdstable[fd].is_file = -1;
 
       if (fd < fdstable_first_free) {
@@ -235,7 +237,7 @@
       return 0;
    }
 
-   int add_xpn_file_to_fdstable ( int fd )
+   int add_xpn_file_to_fdstable ( int fd, int tier, const char * path )
    {
       // struct stat st;
       struct generic_fd virtual_fd;
@@ -258,7 +260,11 @@
 
       // setup virtual_fd
       virtual_fd.type    = FD_XPN;
-      virtual_fd.real_fd = fd;
+      virtual_fd.real_fd = malloc(sizeof(int));
+      *virtual_fd.real_fd = fd;
+      virtual_fd.tier = malloc(sizeof(int));
+      *virtual_fd.tier = tier;
+      virtual_fd.path = strdup(path);
       // virtual_fd.is_file = (S_ISDIR(st.st_mode)) ? 0 : 1;
 
       // insert into fdstable
@@ -356,7 +362,8 @@
       fd = dirfd(dir);
 
       virtual_fd.type    = FD_XPN;
-      virtual_fd.real_fd = fd;
+      virtual_fd.real_fd = malloc(sizeof(int));
+      *virtual_fd.real_fd = fd;
       // virtual_fd.is_file = 0;
 
       // insert into the dirtable (and fdstable)
@@ -441,7 +448,7 @@
       aux_dirp = *dir;
 
       struct generic_fd virtual_fd = fdstable_get ( aux_dirp.fd );
-      aux_dirp.fd = virtual_fd.real_fd;
+      aux_dirp.fd = *virtual_fd.real_fd;
 
       debug_info("[BYPASS] << After fdsdirtable_getfd....\n");
 
@@ -516,7 +523,7 @@
     int xpn_hsm_initialize ( void )
     {
 
-      printf("[BYPASS_HSM] >> Begin xpn_hsm_initialize....\n");
+      debug_info("[BYPASS_HSM] >> Begin xpn_hsm_initialize....\n");
 
       char * hsm_arch_path = getenv("XPN_HSM_ARCH");
       if (hsm_arch_path != NULL)
@@ -551,7 +558,6 @@
               count++;
             }
             line_pos = 0;
-            printf("[BYPASS_HSM] >>     Tier %d - mounted on %s - size %ld is xpn - %d \n", tier[count-1].tier, tier[count-1].mount_path, tier[count-1].max_size, tier[count-1].is_xpn);
           } else {
               if (line_pos < (int)sizeof(line) - 1) line[line_pos++] = buf[i];
           }
@@ -560,14 +566,14 @@
 
       close(fd);
       num_tiers = count;
-      printf("[BYPASS_HSM] >> After xpn_hsm_initialize, num tiers: %d\n", num_tiers);
+      debug_info("[BYPASS_HSM] >> After xpn_hsm_initialize, num tiers: %d\n", num_tiers);
 
       return 0;
     }
 
     void xpn_hsm_destroy ( void )
     {
-      printf("[BYPASS_HSM] >> Begin xpn_hsm_destroy....\n");
+      debug_info("[BYPASS_HSM] >> Begin xpn_hsm_destroy....\n");
 
       hsm_migration_policy_destroy();
       for (int i = 0; i < num_tiers; i++) {
@@ -577,7 +583,7 @@
       tier = NULL;
       num_tiers = 0;
 
-      printf("[BYPASS_HSM] << After xpn_hsm_destroy....\n");
+      debug_info("[BYPASS_HSM] << After xpn_hsm_destroy....\n");
     }
 
 
@@ -652,10 +658,13 @@
 
 /* ... Functions / Funciones ......................................... */
 
+    
+    // PARA JC: ESTAN TESTEADAS LAS FUNCIONES OPEN, CREATE, WRITE, READ, CLOSE, UNLINK, LSEEK, STAT
+
     // File API
     int open ( const char *path, int flags, ... )
     {
-      int ret;
+      int ret, i;
       int fd = -1;
       va_list ap;
       mode_t mode = 0;
@@ -678,14 +687,11 @@
         // It is an XPN partition, so we redirect the syscall to expand syscall
         debug_info("[BYPASS]\t xpn_open (%s,%o)\n",path + strlen(xpn_adaptor_partition_prefix), flags);
 
-        for (int i = 0; i < num_tiers; i++) {
+        for (i = 0; i < num_tiers; i++) {
 
           if ((flags & O_CREAT) == O_CREAT) {
             if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
-                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) {
-              printf("[BYPASS_HSM] >>     Tier %d is full, cannot creat file %s in this tier\n", tier[i].tier, path);
-              continue;
-            }
+                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) continue;
           }
 
           char updated_path[512];
@@ -703,15 +709,12 @@
           }
 
           if (fd >= 0) {
-            printf("[BYPASS_HSM] >>     File %s opened in tier %d\n", path, tier[i].tier);
             hsm_tier_append_file(updated_path, tier[i].tier);
             break;
-          } else {
-            printf("[BYPASS_HSM] >>     File %s could not be opened in tier %d\n", path, tier[i].tier);
           }
         }
 
-        ret = add_xpn_file_to_fdstable(fd);
+        ret = add_xpn_file_to_fdstable(fd, i, skip_xpn_prefix(path));
 
         debug_info("[BYPASS]\t xpn_open (%s,%o) -> %d\n", skip_xpn_prefix(path), flags, fd);
       }
@@ -736,7 +739,7 @@
 #if defined(HAVE_64BITS)
     int open64 ( const char *path, int flags, ... )
     {
-      int ret;
+      int ret, i;
       int fd = -1;
       va_list ap;
       mode_t mode = 0;
@@ -759,14 +762,11 @@
         // It is an XPN partition, so we redirect the syscall to expand syscall
         debug_info("[BYPASS]\t xpn_open (%s,%o)\n",path + strlen(xpn_adaptor_partition_prefix), flags);
 
-        for (int i = 0; i < num_tiers; i++) {
+        for (i = 0; i < num_tiers; i++) {
 
           if ((flags & O_CREAT) == O_CREAT) {
             if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
-                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) {
-              printf("[BYPASS_HSM] >>     Tier %d is full, cannot creat file %s in this tier\n", tier[i].tier, path);
-              continue;
-            }
+                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) continue;
           }
 
           char updated_path[512];
@@ -784,17 +784,14 @@
           }
 
           if (fd >= 0) {
-            printf("[BYPASS_HSM] >>     File %s opened in tier %d\n", path, tier[i].tier);
             hsm_tier_append_file(updated_path, tier[i].tier);
             break;
-          } else {
-            printf("[BYPASS_HSM] >>     File %s could not be opened in tier %d\n", path, tier[i].tier);
           }
         }
 
         debug_info("[BYPASS]\t xpn_open (%s,%o) -> %d\n", skip_xpn_prefix(path), flags, fd);
 
-        ret = add_xpn_file_to_fdstable(fd);
+        ret = add_xpn_file_to_fdstable(fd, i, skip_xpn_prefix(path));
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -818,7 +815,7 @@
 #ifndef HAVE_ICC
     int __open_2 ( const char *path, int flags, ... )
     {
-      int ret;
+      int ret, i;
       int fd = -1;
       va_list ap;
       mode_t mode = 0;
@@ -840,14 +837,11 @@
         // It is an XPN partition, so we redirect the syscall to expand syscall
         debug_info("[BYPASS]\t xpn_open (%s,%o)\n",path + strlen(xpn_adaptor_partition_prefix), flags);
 
-        for (int i = 0; i < num_tiers; i++) {
+        for (i = 0; i < num_tiers; i++) {
 
           if ((flags & O_CREAT) == O_CREAT) {
             if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
-                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) {
-              printf("[BYPASS_HSM] >>     Tier %d is full, cannot creat file %s in this tier\n", tier[i].tier, path);
-              continue;
-            }
+                ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) continue;
           }
 
           char updated_path[512];
@@ -865,17 +859,14 @@
           }
 
           if (fd >= 0) {
-            printf("[BYPASS_HSM] >>     File %s opened in tier %d\n", path, tier[i].tier);
             hsm_tier_append_file(updated_path, tier[i].tier);
             break;
-          } else {
-            printf("[BYPASS_HSM] >>     File %s could not be opened in tier %d\n", path, tier[i].tier);
           }
         }
 
         debug_info("[BYPASS]\t xpn_open (%s,%o) -> %d\n", skip_xpn_prefix(path), flags, fd);
 
-        ret = add_xpn_file_to_fdstable(fd);
+        ret = add_xpn_file_to_fdstable(fd, i, skip_xpn_prefix(path));
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -897,7 +888,7 @@
 
     int creat ( const char *path, mode_t mode )
     {
-      int ret;
+      int ret, i;
       int fd = -1;
 
       debug_info("[BYPASS] >> Begin creat....\n");
@@ -911,7 +902,7 @@
         // It is an XPN partition, so we redirect the syscall to expand syscall
         debug_info("[BYPASS]\t try to creat %s", skip_xpn_prefix(path));
 
-        for (int i = 0; i < num_tiers; i++) {
+        for (i = 0; i < num_tiers; i++) {
 
           if (((tier[i].is_xpn == 1) && (tier[i].current_size + 8192 > tier[i].max_size)) || 
               ((tier[i].is_xpn == 0) && (tier[i].current_size > tier[i].max_size))) continue;
@@ -920,23 +911,19 @@
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
 
           if (tier[i].is_xpn) {
-            fd  = xpn_creat((const char *)updated_path,mode);
-            tier[i].current_size += 8192;
+            fd  = xpn_creat((char *)updated_path, mode);
           } else {
             fd = dlsym_creat((char *)updated_path, mode);
           }
 
           if (fd >= 0) {
-            printf("[BYPASS_HSM] >>     File %s created in tier %d\n", path, tier[i].tier);
             if (tier[i].is_xpn == 1) tier[i].current_size += 8192;
             hsm_tier_append_file(updated_path, tier[i].tier);
             break;
-          } else {
-            printf("[BYPASS_HSM] >>     File %s could not be created in tier %d\n", path, tier[i].tier);
           }
         }
 
-        ret = add_xpn_file_to_fdstable(fd);
+        ret = add_xpn_file_to_fdstable(fd, i, skip_xpn_prefix(path));
 
         debug_info("[BYPASS]\t creat %s -> %d", skip_xpn_prefix(path), ret);
       }
@@ -954,6 +941,7 @@
       return ret;
     }
 
+    // PARA JC: ESTA FUNCION NO LA HE IMPLEMENTADO PARA HSM
     int mkstemp (char *template)
     {
       int ret = -1;
@@ -974,7 +962,7 @@
         sprintf(str_init,"%06d", n);
 
         int fd  = xpn_creat((const char *)skip_xpn_prefix(template), S_IRUSR | S_IWUSR);
-        ret = add_xpn_file_to_fdstable(fd);
+        ret = add_xpn_file_to_fdstable(fd, 0, skip_xpn_prefix(template));
 
         debug_info("[BYPASS]\t creat %s -> %d", skip_xpn_prefix(template), ret);
       }
@@ -1013,9 +1001,9 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_ftruncate(virtual_fd.real_fd, length);
+            ret = xpn_ftruncate(*virtual_fd.real_fd, length);
           } else {
-            ret = dlsym_ftruncate(virtual_fd.real_fd, length);
+            ret = dlsym_ftruncate(*virtual_fd.real_fd, length);
           }
 
           if (ret >= 0) break;
@@ -1065,20 +1053,20 @@
         //   return -1;
         // }
 
-        debug_info("[BYPASS]\t try to xpn_read %d, %p, %ld\n", virtual_fd.real_fd, buf, nbyte);
+        debug_info("[BYPASS]\t try to xpn_read %d, %p, %ld\n", *virtual_fd.real_fd, buf, nbyte);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_read(virtual_fd.real_fd, buf, nbyte);
+            ret = xpn_read(*virtual_fd.real_fd, buf, nbyte);
           } else {
-            ret = dlsym_read(virtual_fd.real_fd, buf, nbyte);
+            ret = dlsym_read(*virtual_fd.real_fd, buf, nbyte);
           }
 
           if (ret > 0) break;
         }
 
-        debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, nbyte, ret);
+        debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", *virtual_fd.real_fd, buf, nbyte, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -1122,29 +1110,26 @@
         //   return -1;
         // }
 
-        debug_info("[BYPASS]\t try to xpn_write %d, %p, %ld\n", virtual_fd.real_fd, buf, nbyte);
-
-        for (int i = 0; i < num_tiers; i++) {
-
-          if (tier[i].current_size + nbyte > tier[i].max_size) {
-              printf("[BYPASS_HSM] >>     Tier %d is full, cannot write %ld bytes in this tier\n", tier[i].tier, nbyte);
-              continue;
-          }
+        debug_info("[BYPASS]\t try to xpn_write %d, %p, %ld\n", *virtual_fd.real_fd, buf, nbyte);
+        int i;
+        for (i = *virtual_fd.tier; i < num_tiers; i++) {
+          if (tier[i].current_size + nbyte > tier[i].max_size) continue;
+          
+          // PARA JC: LA MIGRACION SOLO LA METI PARA ESTA FUNCION DE WRITE, HAY MAS POR EL BYPASS, PERO ES HACER LO MISMO QUE AQUI
+          if (*virtual_fd.tier < i) hsm_migrate_file(&virtual_fd, *virtual_fd.tier, i);
 
           if (tier[i].is_xpn) {
-            ret = xpn_write(virtual_fd.real_fd, (void *)buf, nbyte);
+            ret = xpn_write(*virtual_fd.real_fd, (void *)buf, nbyte);
           } else {
-            ret = dlsym_write(virtual_fd.real_fd, (void *)buf, nbyte);
+            ret = dlsym_write(*virtual_fd.real_fd, (void *)buf, nbyte);
           }
 
           if (ret > 0) {
             tier[i].current_size += ret;
-            printf("[BYPASS_HSM] >>     Wrote %ld bytes in tier %d, current size %ld\n", ret, tier[i].tier, tier[i].current_size);
             break;
           }
         }
-
-        debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, nbyte, ret);
+        debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", *virtual_fd.real_fd, buf, nbyte, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -1189,26 +1174,26 @@
         //   return -1;
         // }
 
-        debug_info("[BYPASS]\t try to xpn_read %d, %p, %ld, %ld\n", virtual_fd.real_fd, buf, count, offset);
+        debug_info("[BYPASS]\t try to xpn_read %d, %p, %ld, %ld\n", *virtual_fd.real_fd, buf, count, offset);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, offset, SEEK_SET);
+            ret = xpn_lseek(*virtual_fd.real_fd, offset, SEEK_SET);
             if (ret != -1) {
-              ret = xpn_read(virtual_fd.real_fd, buf, count);
+              ret = xpn_read(*virtual_fd.real_fd, buf, count);
             }
             if (ret != -1) {
-              xpn_lseek(virtual_fd.real_fd, -ret, SEEK_CUR);
+              xpn_lseek(*virtual_fd.real_fd, -ret, SEEK_CUR);
             }
           } else {
-            ret = dlsym_pread(virtual_fd.real_fd, buf, count, offset);
+            ret = dlsym_pread(*virtual_fd.real_fd, buf, count, offset);
           }
 
           if (ret > 0) break;
         }
 
-        debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
+        debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", *virtual_fd.real_fd, buf, count, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -1253,22 +1238,22 @@
         //   return -1;
         // }
 
-        debug_info("[BYPASS]\t try to xpn_write %d, %p, %ld, %ld\n", virtual_fd.real_fd, buf, count, offset);
+        debug_info("[BYPASS]\t try to xpn_write %d, %p, %ld, %ld\n", *virtual_fd.real_fd, buf, count, offset);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].current_size + count > tier[i].max_size) continue;
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, offset, SEEK_SET);
+            ret = xpn_lseek(*virtual_fd.real_fd, offset, SEEK_SET);
             if (ret != -1) {
-              ret = xpn_write(virtual_fd.real_fd, buf, count);
+              ret = xpn_write(*virtual_fd.real_fd, buf, count);
             }
             if (ret != -1) {
-              xpn_lseek(virtual_fd.real_fd, -ret, SEEK_CUR);
+              xpn_lseek(*virtual_fd.real_fd, -ret, SEEK_CUR);
             }
           } else {
-            ret = dlsym_pwrite(virtual_fd.real_fd, buf, count, offset);
+            ret = dlsym_pwrite(*virtual_fd.real_fd, buf, count, offset);
           }
 
           if (ret > 0) {
@@ -1277,7 +1262,7 @@
           }
         }
 
-        debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
+        debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", *virtual_fd.real_fd, buf, count, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -1325,26 +1310,26 @@
         //   return -1;
         // }
 
-        debug_info("[BYPASS]\t try to xpn_read %d, %p, %ld, %ld\n", virtual_fd.real_fd, buf, count, offset);
+        debug_info("[BYPASS]\t try to xpn_read %d, %p, %ld, %ld\n", *virtual_fd.real_fd, buf, count, offset);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, offset, SEEK_SET);
+            ret = xpn_lseek(*virtual_fd.real_fd, offset, SEEK_SET);
             if (ret != -1) {
-              ret = xpn_read(virtual_fd.real_fd, buf, count);
+              ret = xpn_read(*virtual_fd.real_fd, buf, count);
             }
             if (ret != -1) {
-              xpn_lseek(virtual_fd.real_fd, -ret, SEEK_CUR);
+              xpn_lseek(*virtual_fd.real_fd, -ret, SEEK_CUR);
             }
           } else {
-            ret = dlsym_pread64(virtual_fd.real_fd, buf, count, offset);
+            ret = dlsym_pread64(*virtual_fd.real_fd, buf, count, offset);
           }
 
           if (ret > 0) break;
         }
 
-        debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
+        debug_info("[BYPASS]\t xpn_read %d, %p, %ld -> %ld\n", *virtual_fd.real_fd, buf, count, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -1389,22 +1374,22 @@
         //   return -1;
         // }
 
-        debug_info("[BYPASS]\t try to xpn_write %d, %p, %ld, %ld\n", virtual_fd.real_fd, buf, count, offset);
+        debug_info("[BYPASS]\t try to xpn_write %d, %p, %ld, %ld\n", *virtual_fd.real_fd, buf, count, offset);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].current_size + count > tier[i].max_size) continue;
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, offset, SEEK_SET);
+            ret = xpn_lseek(*virtual_fd.real_fd, offset, SEEK_SET);
             if (ret != -1) {
-              ret = xpn_write(virtual_fd.real_fd, buf, count);
+              ret = xpn_write(*virtual_fd.real_fd, buf, count);
             }
             if (ret != -1) {
-              xpn_lseek(virtual_fd.real_fd, -ret, SEEK_CUR);
+              xpn_lseek(*virtual_fd.real_fd, -ret, SEEK_CUR);
             }
           } else {
-            ret = dlsym_pwrite64(virtual_fd.real_fd, buf, count, offset);
+            ret = dlsym_pwrite64(*virtual_fd.real_fd, buf, count, offset);
           }
 
           if (ret > 0) {
@@ -1413,7 +1398,7 @@
           }
         }
 
-        debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", virtual_fd.real_fd, buf, count, ret);
+        debug_info("[BYPASS]\t xpn_write %d, %p, %ld -> %ld\n", *virtual_fd.real_fd, buf, count, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -1451,9 +1436,9 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, offset, whence);
+            ret = xpn_lseek(*virtual_fd.real_fd, offset, whence);
           } else {
-            ret = dlsym_lseek(virtual_fd.real_fd, offset, whence);
+            ret = dlsym_lseek(*virtual_fd.real_fd, offset, whence);
           }
 
           if (ret >= 0) break;
@@ -1499,9 +1484,9 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, offset, whence);
+            ret = xpn_lseek(*virtual_fd.real_fd, offset, whence);
           } else {
-            ret = dlsym_lseek64(virtual_fd.real_fd, offset, whence);
+            ret = dlsym_lseek64(*virtual_fd.real_fd, offset, whence);
           }
 
           if (ret >= 0) break;
@@ -1553,10 +1538,7 @@
             ret = dlsym_stat(_STAT_VER,(const char *)updated_path, buf);
           }
 
-          if (ret >= 0) {
-            printf("[BYPASS_HSM] >>     stat %s found in tier %d\n", path, tier[i].tier);
-            break;
-          }
+          if (ret >= 0) break;
         }
 
         debug_info("[BYPASS]\t xpn_stat %s -> %d\n", skip_xpn_prefix(path), ret);
@@ -1805,12 +1787,12 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_fstat(virtual_fd.real_fd, &st);
+            ret = xpn_fstat(*virtual_fd.real_fd, &st);
             if (ret >= 0) {
               stat_to_stat64(buf, &st);
             }
           } else {
-            ret = dlsym_fxstat64(ver, virtual_fd.real_fd, buf);
+            ret = dlsym_fxstat64(ver, *virtual_fd.real_fd, buf);
           }
 
           if (ret >= 0) break;
@@ -1950,9 +1932,9 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_fstat(virtual_fd.real_fd, buf);
+            ret = xpn_fstat(*virtual_fd.real_fd, buf);
           } else {
-            ret = dlsym_fstat(_STAT_VER, virtual_fd.real_fd, buf);
+            ret = dlsym_fstat(_STAT_VER, *virtual_fd.real_fd, buf);
           }
 
           if (ret >= 0) break;
@@ -1996,9 +1978,9 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_fstat(virtual_fd.real_fd, buf);
+            ret = xpn_fstat(*virtual_fd.real_fd, buf);
           } else {
-            ret = dlsym_fstat(ver, virtual_fd.real_fd, buf);
+            ret = dlsym_fstat(ver, *virtual_fd.real_fd, buf);
           }
 
           if (ret >= 0) break;
@@ -2126,14 +2108,14 @@
         xpn_adaptor_keepInit ();
 
         // It is an XPN partition, so we redirect the syscall to expand syscall
-        debug_info("[BYPASS]\t xpn_close %d\n", virtual_fd.real_fd);
+        debug_info("[BYPASS]\t xpn_close %d\n", *virtual_fd.real_fd);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_close(virtual_fd.real_fd);
+            ret = xpn_close(*virtual_fd.real_fd);
           } else {
-            ret = dlsym_close(virtual_fd.real_fd);
+            ret = dlsym_close(*virtual_fd.real_fd);
           }
 
           if (ret >= 0) break;
@@ -2141,7 +2123,7 @@
 
         fdstable_remove(fd);
 
-        debug_info("[BYPASS]\t xpn_close %d -> %d\n", virtual_fd.real_fd, ret);
+        debug_info("[BYPASS]\t xpn_close %d -> %d\n", *virtual_fd.real_fd, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -2249,7 +2231,6 @@
             break;
           }
         }
-
         debug_info("[BYPASS]\t xpn_unlink -> %d\n", ret);
       }
       // Not an XPN partition. We must link with the standard library
@@ -2335,6 +2316,7 @@
     // File API (stdio)
     FILE *fopen ( const char *path, const char *mode )
     {
+      int i;
       FILE * ret = NULL;
 
       debug_info("[BYPASS] >> Begin fopen....\n");
@@ -2350,7 +2332,7 @@
         // It is an XPN partition, so we redirect the syscall to expand syscall
         debug_info("[BYPASS]\t xpn_open (%s)\n",path + strlen(xpn_adaptor_partition_prefix));
 
-        for (int i = 0; i < num_tiers; i++) {
+        for (i = 0; i < num_tiers; i++) {
 
           char updated_path[512];
           snprintf(updated_path, sizeof(updated_path), "%s/%s", tier[i].mount_path, skip_xpn_prefix(path));
@@ -2371,7 +2353,7 @@
                   break;
             }
 
-            int xpn_fd = add_xpn_file_to_fdstable(fd);
+            int xpn_fd = add_xpn_file_to_fdstable(fd, i, skip_xpn_prefix(path));
 
             debug_info("[BYPASS]\t xpn_open (%s) -> %d\n", skip_xpn_prefix(path), fd);
 
@@ -2456,12 +2438,12 @@
         xpn_adaptor_keepInit ();
 
         // It is an XPN partition, so we redirect the syscall to expand syscall
-        debug_info("[BYPASS]\t xpn_close %d\n", virtual_fd.real_fd);
+        debug_info("[BYPASS]\t xpn_close %d\n", *virtual_fd.real_fd);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_close(virtual_fd.real_fd);
+            ret = xpn_close(*virtual_fd.real_fd);
           } else {
             ret = dlsym_fclose(stream);
           }
@@ -2471,7 +2453,7 @@
 
         fdstable_remove(fd);
 
-        debug_info("[BYPASS]\t xpn_close %d -> %d\n", virtual_fd.real_fd, ret);
+        debug_info("[BYPASS]\t xpn_close %d -> %d\n", *virtual_fd.real_fd, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -2518,12 +2500,12 @@
 
         int buf_size = size * nmemb;
 
-        debug_info("[BYPASS]\t try to xpn_read %d, %p, %d\n", virtual_fd.real_fd, ptr, buf_size);
+        debug_info("[BYPASS]\t try to xpn_read %d, %p, %d\n", *virtual_fd.real_fd, ptr, buf_size);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_read(virtual_fd.real_fd, ptr, buf_size);
+            ret = xpn_read(*virtual_fd.real_fd, ptr, buf_size);
             ret = ret / size; // Number of items read
           } else {
             ret = dlsym_fread(ptr, size, nmemb, stream);
@@ -2532,7 +2514,7 @@
           if (ret > 0) break;
         }
 
-        debug_info("[BYPASS]\t xpn_read %d, %p, %d -> %ld\n", virtual_fd.real_fd, ptr, buf_size, ret);
+        debug_info("[BYPASS]\t xpn_read %d, %p, %d -> %ld\n", *virtual_fd.real_fd, ptr, buf_size, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -2579,14 +2561,14 @@
 
         int buf_size = size * nmemb;
 
-        debug_info("[BYPASS]\t try to xpn_write %d, %p, %d\n", virtual_fd.real_fd, ptr, buf_size);
+        debug_info("[BYPASS]\t try to xpn_write %d, %p, %d\n", *virtual_fd.real_fd, ptr, buf_size);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].current_size + size > tier[i].max_size) continue;
 
           if (tier[i].is_xpn) {
-            ret = xpn_write(virtual_fd.real_fd, ptr, buf_size);
+            ret = xpn_write(*virtual_fd.real_fd, ptr, buf_size);
             ret = ret / size; // Number of items Written
           } else {
             ret = dlsym_fwrite(ptr, size, nmemb, stream);
@@ -2599,7 +2581,7 @@
         }
 
 
-        debug_info("[BYPASS]\t xpn_write %d, %p, %d -> %ld\n", virtual_fd.real_fd, ptr, buf_size, ret);
+        debug_info("[BYPASS]\t xpn_write %d, %p, %d -> %ld\n", *virtual_fd.real_fd, ptr, buf_size, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -2635,12 +2617,12 @@
         xpn_adaptor_keepInit ();
 
         // It is an XPN partition, so we redirect the syscall to expand syscall
-        debug_info("[BYPASS]\t xpn_lseek %d,%ld,%d\n", virtual_fd.real_fd, offset, whence);
+        debug_info("[BYPASS]\t xpn_lseek %d,%ld,%d\n", *virtual_fd.real_fd, offset, whence);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, offset, whence);
+            ret = xpn_lseek(*virtual_fd.real_fd, offset, whence);
           } else {
             ret = dlsym_fseek(stream, offset, whence);
           }
@@ -2648,7 +2630,7 @@
           if (ret >= 0) break;
         }
 
-        debug_info("[BYPASS]\t xpn_lseek %d,%ld,%d -> %d\n", virtual_fd.real_fd, offset, whence, ret);
+        debug_info("[BYPASS]\t xpn_lseek %d,%ld,%d -> %d\n", *virtual_fd.real_fd, offset, whence, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -2682,12 +2664,12 @@
         xpn_adaptor_keepInit ();
 
         // It is an XPN partition, so we redirect the syscall to expand syscall
-        debug_info("[BYPASS]\t xpn_lseek %d\n", virtual_fd.real_fd);
+        debug_info("[BYPASS]\t xpn_lseek %d\n", *virtual_fd.real_fd);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_lseek(virtual_fd.real_fd, 0, SEEK_CUR);
+            ret = xpn_lseek(*virtual_fd.real_fd, 0, SEEK_CUR);
           } else {
             ret = dlsym_ftell(stream);
           }
@@ -2695,7 +2677,7 @@
           if (ret >= 0) break;
         }
 
-        debug_info("[BYPASS]\t xpn_lseek %d -> %ld\n", virtual_fd.real_fd, ret);
+        debug_info("[BYPASS]\t xpn_lseek %d -> %ld\n", *virtual_fd.real_fd, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -2727,12 +2709,12 @@
         xpn_adaptor_keepInit ();
 
         // It is an XPN partition, so we redirect the syscall to expand syscall
-        debug_info("[BYPASS]\t xpn_lseek %d\n", virtual_fd.real_fd);
+        debug_info("[BYPASS]\t xpn_lseek %d\n", *virtual_fd.real_fd);
 
         for (int i = 0; i < num_tiers; i++) {
           // REVISE HSM
           if (tier[i].is_xpn) {
-            xpn_lseek(virtual_fd.real_fd, 0, SEEK_SET);
+            xpn_lseek(*virtual_fd.real_fd, 0, SEEK_SET);
           } else {
             dlsym_rewind(stream);
           }
@@ -2740,9 +2722,9 @@
           // if (ret >= 0) break;
         }
 
-        xpn_lseek(virtual_fd.real_fd, 0, SEEK_SET);
+        xpn_lseek(*virtual_fd.real_fd, 0, SEEK_SET);
 
-        debug_info("[BYPASS]\t xpn_lseek %d\n", virtual_fd.real_fd);
+        debug_info("[BYPASS]\t xpn_lseek %d\n", *virtual_fd.real_fd);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -2774,20 +2756,20 @@
         xpn_adaptor_keepInit ();
 
         // It is an XPN partition, so we redirect the syscall to expand syscall
-        debug_info("[BYPASS]\t xpn_lseek %d\n", virtual_fd.real_fd);
+        debug_info("[BYPASS]\t xpn_lseek %d\n", *virtual_fd.real_fd);
 
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
             int ret1, ret2;
 
-            ret1 = xpn_lseek(virtual_fd.real_fd, 0, SEEK_CUR);
+            ret1 = xpn_lseek(*virtual_fd.real_fd, 0, SEEK_CUR);
             if (ret1 != -1) {
               debug_info("[BYPASS] << After feof....\n");
               return ret;
             }
 
-            ret2 = xpn_lseek(virtual_fd.real_fd, 0, SEEK_END);
+            ret2 = xpn_lseek(*virtual_fd.real_fd, 0, SEEK_END);
             if (ret2 != -1) {
               debug_info("[BYPASS] << After feof....\n");
               return ret;
@@ -2805,7 +2787,7 @@
           if (ret >= 0) break;
         }
 
-        debug_info("[BYPASS]\t xpn_lseek %d -> %d\n", virtual_fd.real_fd, ret);
+        debug_info("[BYPASS]\t xpn_lseek %d -> %d\n", *virtual_fd.real_fd, ret);
       }
       // Not an XPN partition. We must link with the standard library
       else
@@ -3175,9 +3157,9 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_dup(virtual_fd.real_fd);
+            ret = xpn_dup(*virtual_fd.real_fd);
           } else {
-            ret = dlsym_dup(virtual_fd.real_fd);
+            ret = dlsym_dup(*virtual_fd.real_fd);
           }
 
           if (ret >= 0) break;
@@ -3223,9 +3205,9 @@
         for (int i = 0; i < num_tiers; i++) {
 
           if (tier[i].is_xpn) {
-            ret = xpn_dup2(virtual_fd.real_fd, virtual_fd2.real_fd);
+            ret = xpn_dup2(*virtual_fd.real_fd, *virtual_fd2.real_fd);
           } else {
-            ret = dlsym_dup2(virtual_fd.real_fd, virtual_fd2.real_fd);
+            ret = dlsym_dup2(*virtual_fd.real_fd, *virtual_fd2.real_fd);
           }
 
           if (ret >= 0) break;
@@ -3717,8 +3699,6 @@
             previous->next = current->next;
           }
 
-          printf("[BYPASS_HSM] HSM Migration Policy: Deleting file %s from tier %d, current size %ld\n", path, tier_id, tier[tier_id].current_size);
-
           free(current->path);
           free(current);
           return;
@@ -3728,56 +3708,58 @@
       }
     }
 
-    void hsm_migrate_file ( char * path, int source_tier, int dest_tier ) {
-      int fd_source, fd_dest;
+    void hsm_migrate_file ( struct generic_fd * virtual_fd, int source_tier, int dest_tier ) {
+      int fd_dest;
       ssize_t bytes_read, bytes_written;
-      char buffer[8192];
-      debug_info("[BYPASS_HSM] HSM Migration Policy: Migrating file %s from tier %d to tier %d\n", path, source_tier, dest_tier);
-
       char old_path[512], new_path[512];
-      snprintf(old_path, sizeof(old_path), "%s/%s", tier[source_tier].mount_path, skip_xpn_prefix(path));
-      snprintf(new_path, sizeof(new_path), "%s/%s", tier[dest_tier].mount_path, skip_xpn_prefix(path));
+      // PARA JC: ESTE BUFFER TIENE QUE SER DEL TAMAÑO DE BLOQUE DE XPN - HAY FUNCIONES EN LA API DE XPN QUE DEVUELVEN LA CONFIGURACION DE LOS SERVIDORES
+      char buffer[1024*1024];
 
-      if (tier[source_tier].is_xpn) {
-        fd_source = xpn_open(old_path, O_RDONLY);
-      } else {
-        fd_source = dlsym_open(old_path, O_RDONLY);
-      }
+      char *temp_path = virtual_fd->path;
 
-      if (tier[dest_tier].is_xpn) {
-        fd_dest = xpn_open(new_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+      snprintf(old_path, sizeof(old_path), "%s/%s", tier[source_tier].mount_path, temp_path);
+      snprintf(new_path, sizeof(new_path), "%s/%s", tier[dest_tier].mount_path, temp_path);
+
+      if (tier[source_tier].is_xpn == 1) xpn_lseek(*virtual_fd->real_fd, 0, SEEK_SET);
+      else dlsym_lseek(*virtual_fd->real_fd, 0, SEEK_SET);
+
+      // PARA JC: LOS PERMISOS DEBERIAN SER LOS MISMOS QUE TENIA EL FICHERO ORIGINAL
+      if (tier[dest_tier].is_xpn == 1) {
+        tier[dest_tier].current_size += 8192;
+        fd_dest = xpn_open(new_path, O_RDWR | O_CREAT | O_TRUNC, 0777);
       } else {
-        fd_dest = dlsym_open2(new_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        dlsym_lseek(*virtual_fd->real_fd, 0, SEEK_SET);
+        fd_dest = dlsym_open2(new_path, O_RDWR | O_CREAT | O_TRUNC, 0777);
       }
 
       do {
-        if (tier[source_tier].is_xpn) {
-          bytes_read = xpn_read(fd_source, buffer, sizeof(buffer));
+        if (tier[source_tier].is_xpn == 1) {
+          bytes_read = xpn_read(*virtual_fd->real_fd, buffer, sizeof(buffer));
         } else {
-          bytes_read = dlsym_read(fd_source, buffer, sizeof(buffer));
+          bytes_read = dlsym_read(*virtual_fd->real_fd, buffer, sizeof(buffer));
         }
 
-        if (tier[dest_tier].is_xpn) {
+        if (tier[dest_tier].is_xpn == 1) {
           bytes_written = xpn_write(fd_dest, buffer, bytes_read);
         } else {
           bytes_written = dlsym_write(fd_dest, buffer, bytes_read);
         }
+
+        tier[source_tier].current_size -= bytes_written;
+        tier[dest_tier].current_size += bytes_written;
       } while (bytes_read > 0 && bytes_written == bytes_read);
 
-      if (tier[source_tier].is_xpn) {
-        xpn_close(fd_source);
+      if (tier[source_tier].is_xpn == 1) {
+        tier[source_tier].current_size -= 8192;
+        xpn_close(*virtual_fd->real_fd);
         xpn_unlink(old_path);
       } else {
-        dlsym_close(fd_source);
+        dlsym_close(*virtual_fd->real_fd);
         dlsym_unlink(old_path);
       }
 
-      if (tier[dest_tier].is_xpn) {
-        xpn_close(fd_dest);
-      } else {
-        dlsym_close(fd_dest);
-      }
-
+      *virtual_fd->real_fd = fd_dest;
+      *virtual_fd->tier    = dest_tier;
       hsm_tier_append_file (new_path, dest_tier);
       hsm_tier_delete_file (old_path, source_tier);
     }

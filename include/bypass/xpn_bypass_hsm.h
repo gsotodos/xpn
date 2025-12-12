@@ -73,7 +73,9 @@
      struct generic_fd
      {
          int type;
-         int real_fd;
+         int * real_fd;
+         int * tier;
+         char * path;
          // int is_file;
      };
 
@@ -181,7 +183,7 @@
      void        hsm_migration_policy_destroy ( void );
      void        hsm_tier_append_file ( const char * path, int tier_id );
      void        hsm_tier_delete_file ( char * path, int tier_id );
-     void        hsm_migrate_file( char * path, int source_tier, int dest_tier );
+     void        hsm_migrate_file( struct generic_fd * virtual_fd, int source_tier, int dest_tier );
 
 
      // MPI API
